@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from datetime import datetime
 from flask import Flask, jsonify, request
 
@@ -87,6 +88,40 @@ def count():
     conn.close()
 
     return jsonify(count=n)
+    
+@app.get("/status")
+def status():
+    init_db()
+    
+    # 1. Compter les événements (réutilise la logique de /count)
+    conn = get_conn()
+    cur = conn.execute("SELECT COUNT(*) FROM events")
+    count = cur.fetchone()[0]
+    conn.close()
+    
+    # 2. Analyser les backups
+    backup_dir = "/backup"
+    if os.path.exists(backup_dir) and os.path.isdir(backup_dir):
+        backup_files = [f for f in os.listdir(backup_dir) if f.endswith('.db')]  # TOUS les .db
+        if backup_files:
+            # Trouver le fichier le plus récent
+            latest_file = max(backup_files, key=lambda f: os.path.getmtime(os.path.join(backup_dir, f)))
+            latest_path = os.path.join(backup_dir, latest_file)
+            backup_age_seconds = int(time.time() - os.path.getmtime(latest_path))
+        else:
+            latest_file = None
+            backup_age_seconds = None
+    else:
+        latest_file = None
+        backup_age_seconds = None
+    
+    # 3. Retourner le JSON
+    return jsonify(
+        count=count,
+        last_backup_file=latest_file,
+        backup_age_seconds=backup_age_seconds
+    )
+
 
 # ---------- Main ----------
 if __name__ == "__main__":

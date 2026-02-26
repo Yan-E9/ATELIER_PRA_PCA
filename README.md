@@ -231,27 +231,27 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+*Les composants dont la perte entraîne une perte de données sont le PVC pra-data, qui contient la base SQLite de production, le PVC pra-backup, qui stocke l’historique des sauvegardes, et le stockage physique sous-jacent qui supporte ces volumes. Si pra-data est perdu sans sauvegarde, les données applicatives sont perdues ; si pra-backup est perdu, on ne peut plus restaurer après un sinistre ; et si le stockage commun aux deux PVC est impacté, on perd à la fois la production et les backups.*
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+*Nous n’avons pas perdu les données lors de la suppression du PVC pra-data parce qu’elles étaient régulièrement copiées sur un autre volume et que nous avons appliqué une procédure de restauration. Le CronJob sauvegarde la base de production de pra-data vers pra-backup toutes les minutes, ce qui crée des fichiers de backup indépendants. Après la suppression, nous recréons un PVC pra-data vide puis lançons un Job qui recopie le dernier backup depuis pra-backup vers ce nouveau volume, ce qui reconstruit la base. La conservation des données vient donc du mécanisme de sauvegarde et de restauration.*
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+*Dans cette solution, le RTO est le temps nécessaire pour remettre l’application en service après un sinistre, c’est-à-dire le temps de recréer l’infrastructure, d’exécuter le Job de restauration et de rendre l’URL à nouveau accessible ; dans ce lab, cela se mesure en quelques minutes. Le RPO correspond à l’ancienneté maximale des données que l’on accepte de perdre : comme les sauvegardes sont effectuées toutes les minutes par le CronJob, on peut perdre au maximum les écritures réalisées depuis la dernière sauvegarde, ce qui donne un RPO d’environ une minute.*
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+*Cette solution n’est pas directement utilisable en production car elle repose sur un seul cluster local et sur des volumes non répliqués, ce qui expose à la perte simultanée de la production et des sauvegardes en cas de sinistre sur le stockage. Il n’existe ni réplication géographique ni site de secours, et la procédure de PRA est essentiellement manuelle, sans orchestration ni tests réguliers. De plus, des aspects essentiels comme la sécurité, la supervision, l’alerting et la gestion des SLA ne sont pas pris en compte, ce qui limite fortement la fiabilité et la robustesse de l’architecture pour un contexte réel.*
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+*Une architecture plus robuste consisterait à déployer l’application sur un cluster Kubernetes managé utilisant un stockage persistant managé, redondé et pouvant faire des snapshots, tout en externalisant les sauvegardes vers un stockage objet répliqué (par exemple dans une autre région). On ajouterait un second cluster ou un site de secours capable de restaurer l’application à partir de ces sauvegardes, avec un runbook de PRA largement automatisé pour réduire le RTO. Enfin, on intégrerait du monitoring, de l’alerting et des tests réguliers de restauration afin de vérifier en continu que les objectifs de RTO et de RPO sont respectés dans des conditions proches de la production.*
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
@@ -263,13 +263,95 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
-*..**Déposez ici une copie d'écran** de votre réussite..*
+*..**Déposez ici une copie d'écran**!
+!![alt text](image-2.png)*
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
 
-*..Décrir ici votre procédure de restauration (votre runbook)..*  
+*..Décrir ici votre procédure de restauration (votre runbook)..
+
+Procédure de restauration (Runbook) – Atelier 2
+
+Prérequis : fichier pra/55-job-restore-specific.yaml créé avec le contenu suivant :
+
+text
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sqlite-restore-specific
+  namespace: pra
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: restore
+        image: pra/flask-sqlite:1.2  # Remplace par ta dernière image
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "🔄 Restauration depuis \$BACKUP_FILE"
+          cp /backup/\$BACKUP_FILE /data/app.db
+          echo "✅ Restauration terminée"
+        env:
+        - name: BACKUP_FILE
+          value: "CHANGE-MOI"  # ← Nom du backup à restaurer
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: backup
+          mountPath: /backup
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: pra-data
+      - name: backup
+        persistentVolumeClaim:
+          claimName: pra-backup
+Étapes de la procédure :
+
+Lister les backups disponibles :
+
+bash
+kubectl -n pra run tmp-list --rm -it --image=alpine \
+  --overrides='{"spec":{"containers":[{"name":"list","image":"alpine","command":["ls","-la"],"volumeMounts":[{"name":"backup","mountPath":"/backup"}],"volumes":[{"name":"backup","persistentVolumeClaim":{"claimName":"pra-backup"}}]}]}}' /backup
+Exemple de sortie : app-1772098381.db, app-1772098441.db, etc.
+
+Choisir un point de restauration (ex. app-1772098381.db)
+
+Préparer le Job :
+
+bash
+# Supprimer l'ancien Job s'il existe
+kubectl -n pra delete job sqlite-restore-specific --ignore-not-found
+
+# Éditer le YAML pour mettre le bon nom de fichier
+vim pra/55-job-restore-specific.yaml  # Ligne 17 : value: "app-1772098381.db"
+Lancer la restauration :
+
+bash
+kubectl apply -f pra/55-job-restore-specific.yaml
+Suivre l’exécution :
+
+bash
+kubectl -n pra get jobs
+kubectl -n pra logs job/sqlite-restore-specific
+Sortie attendue :
+
+text
+🔄 Restauration depuis app-1772098381.db
+✅ Restauration terminée
+Vérifier la restauration :
+
+bash
+kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
+text
+https://.../count     # Nombre d'événements au moment du backup choisi
+https://.../status   # Confirme le bon backup restauré
+https://.../consultation  # Données correspondant au point choisi*  
   
 ---------------------------------------------------
 Evaluation
