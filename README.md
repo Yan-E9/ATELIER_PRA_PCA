@@ -272,11 +272,10 @@ Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter
 
 *..Décrir ici votre procédure de restauration (votre runbook)..
 
-Procédure de restauration (Runbook) – Atelier 2
+### Procédure de restauration (Runbook) – Atelier 2
 
-Prérequis : fichier pra/55-job-restore-specific.yaml créé avec le contenu suivant :
-
-text
+#### Prérequis : fichier pra/55-job-restore-specific.yaml créé avec le contenu suivant :
+```
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -311,44 +310,47 @@ spec:
       - name: backup
         persistentVolumeClaim:
           claimName: pra-backup
-Étapes de la procédure :
+```
+### Étapes de la procédure :
 
 Lister les backups disponibles :
 
-bash
+```
 kubectl -n pra run tmp-list --rm -it --image=alpine \
   --overrides='{"spec":{"containers":[{"name":"list","image":"alpine","command":["ls","-la"],"volumeMounts":[{"name":"backup","mountPath":"/backup"}],"volumes":[{"name":"backup","persistentVolumeClaim":{"claimName":"pra-backup"}}]}]}}' /backup
+```
 Exemple de sortie : app-1772098381.db, app-1772098441.db, etc.
 
 Choisir un point de restauration (ex. app-1772098381.db)
 
 Préparer le Job :
 
-bash
-# Supprimer l'ancien Job s'il existe
-kubectl -n pra delete job sqlite-restore-specific --ignore-not-found
 
-# Éditer le YAML pour mettre le bon nom de fichier
+#### Supprimer l'ancien Job s'il existe
+```
+kubectl -n pra delete job sqlite-restore-specific --ignore-not-found
+```
+#### Éditer le YAML pour mettre le bon nom de fichier
 vim pra/55-job-restore-specific.yaml  # Ligne 17 : value: "app-1772098381.db"
 Lancer la restauration :
 
-bash
+```
 kubectl apply -f pra/55-job-restore-specific.yaml
+```
 Suivre l’exécution :
-
-bash
+```
 kubectl -n pra get jobs
 kubectl -n pra logs job/sqlite-restore-specific
+```
 Sortie attendue :
 
-text
 🔄 Restauration depuis app-1772098381.db
 ✅ Restauration terminée
 Vérifier la restauration :
 
-bash
+```
 kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
-text
+```
 https://.../count     # Nombre d'événements au moment du backup choisi
 https://.../status   # Confirme le bon backup restauré
 https://.../consultation  # Données correspondant au point choisi*  
